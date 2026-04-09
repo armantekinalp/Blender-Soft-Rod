@@ -1,4 +1,14 @@
-__all__ = ["BaseStack", "RodStack", "create_rod_collection"]
+__all__ = [
+    "BaseStack",
+    "RodStack",
+    "create_rod_collection",
+    "create_spline_rod_collection",
+    "SplineRodStack",
+    "SplineFinnedRodStack",
+    "create_spline_finned_rod_collection",
+    "AnnulusRodStack",
+    "create_annulus_rod_collection",
+]
 
 from typing import TYPE_CHECKING, Any, Protocol, Type, overload
 
@@ -16,7 +26,12 @@ import bpy
 import numpy as np
 from numpy.typing import NDArray
 
-from bsr.geometry.composite.rod import Rod
+from bsr.geometry.composite.rod import (
+    AnnulusRodWithSpline,
+    FinnedRodWithSpline,
+    Rod,
+    RodWithSpline,
+)
 from bsr.geometry.protocol import BlenderMeshInterfaceProtocol, StackProtocol
 from bsr.tools.keyframe_mixin import KeyFrameControlMixin
 
@@ -174,9 +189,95 @@ class RodStack(BaseStack):
     DefaultType: Type = Rod
 
 
+class SplineRodStack(BaseStack):
+    """
+    This class provides a mesh interface for a stack of RodWithSpline objects.
+    Each rod is visualized as a single smooth BezierSplinePipe.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Positions of each rod in the stack. Expected shape is (n_rods, 3, n_nodes).
+    radii : NDArray
+        Radius of each element. Expected shape is (n_rods, n_elems).
+    """
+
+    input_states = {"positions", "radii"}
+    DefaultType: Type = RodWithSpline
+
+
+class SplineFinnedRodStack(BaseStack):
+    """
+    This class provides a mesh interface for a stack of FinnedRodWithSpline objects.
+    Each rod is visualized as a single smooth BezierSplineFinnedPipe.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Positions of each rod in the stack. Expected shape is (n_rods, 3, n_nodes).
+    dilatation : NDArray
+        Dilatation of each element. Expected shape is (n_rods, n_elems).
+    width : NDArray
+        Nominal cross-section width for each rod. Expected shape is (n_rods,).
+        Baked into each rod's bevel profile at construction; does not change per frame.
+    depth : NDArray
+        Nominal cross-section depth for each rod. Expected shape is (n_rods,).
+        Baked into each rod's bevel profile at construction; does not change per frame.
+    radius : NDArray, optional
+        Outer radius of the circle/annulus spine for each rod.
+        Expected shape is (n_rods,). If omitted, no circle spine is added.
+    inner_to_outer_radius_ratio : NDArray, optional
+        Per-rod ratio of inner to outer radius, producing a hollow annulus
+        cross-section. Expected shape is (n_rods,). If omitted, the circle
+        spine is solid.
+    """
+
+    input_states = {
+        "positions",
+        "dilatation",
+        "r_rectangle_center",
+        "directors",
+        "half_fin_span",
+        "fin_thickness",
+        "pipe_outer_radius",
+        "inner_to_outer_radius_ratio",
+    }
+    DefaultType: Type = FinnedRodWithSpline
+
+
+class AnnulusRodStack(BaseStack):
+    """
+    This class provides a mesh interface for a stack of AnnulusRodWithSpline objects.
+    Each rod is visualized as a single smooth hollow annulus (or solid circle) pipe.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Positions of each rod in the stack. Expected shape is (n_rods, 3, n_nodes).
+    dilatation : NDArray
+        Stretch ratio of each element. Expected shape is (n_rods, n_elems).
+    radius : NDArray
+        Outer radius of the annulus/circle bevel for each rod.
+        Expected shape is (n_rods,). Baked into the bevel at construction.
+    inner_to_outer_radius_ratio : NDArray, optional
+        Per-rod ratio of inner to outer radius. Expected shape is (n_rods,).
+        If omitted, the pipe is a solid circle.
+    """
+
+    input_states = {
+        "positions",
+        "dilatation",
+        "pipe_outer_radius",
+        "inner_to_outer_radius_ratio",
+    }
+    DefaultType: Type = AnnulusRodWithSpline
+
+
 # Alias for factory functions
 create_rod_collection = RodStack.create
-
+create_spline_rod_collection = SplineRodStack.create
+create_spline_finned_rod_collection = SplineFinnedRodStack.create
+create_annulus_rod_collection = AnnulusRodStack.create
 
 if TYPE_CHECKING:
     data: dict[str, NDArray] = {

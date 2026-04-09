@@ -1,7 +1,7 @@
 __doc__ = """
 This module provides a set of geometry-mesh interfaces for blender objects.
 """
-__all__ = ["Sphere", "Cylinder"]
+__all__ = ["Sphere", "Cylinder", "Plane"]
 
 from typing import TYPE_CHECKING, Any, cast
 
@@ -601,6 +601,210 @@ class Box(KeyFrameControlMixin):
         self.material.keyframe_insert(data_path="diffuse_color", frame=keyframe)
 
 
+class RectangularBox(KeyFrameControlMixin):
+    """
+    This class provides a mesh interface for Blender Box objects with independent
+    width and depth control.
+
+    Unlike Box, which uses a single radius for both width and depth, RectangularBox
+    allows setting them independently via the director frame axes.
+
+    Parameters
+    ----------
+    position_1 : NDArray
+        The first position of the box object. (3D)
+    position_2 : NDArray
+        The second position of the box object. (3D)
+    width : float
+        The extent of the box along the first row of the rotation matrix.
+    depth : float
+        The extent of the box along the second row of the rotation matrix.
+    rotation_matrix : NDArray
+        A 3x3 rotation matrix to determine the orientation of the box.
+    """
+
+    input_keys = {
+        "position_1",
+        "position_2",
+        "width",
+        "depth",
+        "rotation_matrix",
+    }
+
+    def __init__(
+        self,
+        position_1: NDArray,
+        position_2: NDArray,
+        width: float,
+        depth: float,
+        rotation_matrix: NDArray,
+        **kwargs: Any,
+    ) -> None:
+        self._obj = self._create_box()
+        self._states_position_1 = position_1
+        self._states_position_2 = position_2
+        self._states_width = width
+        self._states_depth = depth
+        self._states_rotation_matrix = rotation_matrix
+        self.update_states(
+            position_1, position_2, width, depth, rotation_matrix
+        )
+
+        self._material = bpy.data.materials.new(
+            name=f"{self._obj.name}_material"
+        )
+        self._obj.data.materials.append(self._material)
+
+    @property
+    def material(self) -> bpy.types.Material:
+        """
+        Access the Blender material.
+        """
+        return self._material
+
+    @classmethod
+    def create(cls, states: MeshDataType) -> "RectangularBox":
+        """
+        Basic factory method to create a new RectangularBox object.
+        """
+        remaining_keys = set(states.keys()) - cls.input_keys
+        if len(remaining_keys) > 0:
+            warnings.warn(
+                f"{list(remaining_keys)} are not used as a part of the state definition."
+            )
+        return cls(
+            states["position_1"],
+            states["position_2"],
+            states["width"],
+            states["depth"],
+            states["rotation_matrix"],
+        )
+
+    @property
+    def object(self) -> bpy.types.Object:
+        """
+        Access the Blender object.
+        """
+        return self._obj
+
+    def update_states(
+        self,
+        position_1: NDArray | None = None,
+        position_2: NDArray | None = None,
+        width: float | None = None,
+        depth: float | None = None,
+        rotation_matrix: NDArray | None = None,
+    ) -> None:
+        """
+        Updates the positions, width, depth, and rotation matrix of the box object.
+
+        Parameters
+        ----------
+        position_1 : NDArray, optional
+            The first new position of the box object.
+        position_2 : NDArray, optional
+            The second new position of the box object.
+        width : float, optional
+            The new width of the box (along the first row of the rotation matrix).
+        depth : float, optional
+            The new depth of the box (along the second row of the rotation matrix).
+        rotation_matrix : NDArray, optional
+            The new 3x3 rotation matrix to determine the orientation of the box.
+        """
+        if (
+            position_1 is None
+            and position_2 is None
+            and width is None
+            and depth is None
+            and rotation_matrix is None
+        ):
+            return
+        if position_1 is not None:
+            position_1 = cast(NDArray[np.floating], position_1)
+            _validate_position(position_1)
+            self._states_position_1 = position_1
+        else:
+            position_1 = self._states_position_1
+        if position_2 is not None:
+            position_2 = cast(NDArray[np.floating], position_2)
+            _validate_position(position_2)
+            self._states_position_2 = position_2
+        else:
+            position_2 = self._states_position_2
+        if width is not None:
+            _validate_radius(width)
+            self._states_width = width
+        else:
+            width = self._states_width
+        if depth is not None:
+            _validate_radius(depth)
+            self._states_depth = depth
+        else:
+            depth = self._states_depth
+        if rotation_matrix is not None:
+            _validate_rotation_matrix(rotation_matrix)
+            self._states_rotation_matrix = rotation_matrix
+        else:
+            rotation_matrix = self._states_rotation_matrix
+
+        if np.allclose(position_1, position_2):
+            raise ValueError(
+                f"Two positions must be different: {(position_1 - position_2)=}"
+            )
+
+        length_vector = position_2 - position_1
+        length = np.linalg.norm(length_vector)
+        center = (position_1 + position_2) / 2
+
+        self.object.location = center
+        self.object.rotation_euler = _matrix_to_euler(rotation_matrix)
+        self.object.scale[0] = width  # Width along first director axis
+        self.object.scale[1] = depth  # Depth along second director axis
+        self.object.scale[2] = length  # Length along rod axis
+
+    def _create_box(self) -> bpy.types.Object:
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        box = bpy.context.active_object
+        return box
+
+    def update_material(self, **kwargs: dict[str, Any]) -> None:
+        """
+        Updates the material of the box object.
+
+        Parameters
+        ----------
+        color : NDArray
+            The new color of the box object in RGBA format.
+        """
+        if "color" in kwargs:
+            color = kwargs["color"]
+            if isinstance(color, (tuple, list)):
+                color = np.array(color)
+            assert isinstance(
+                color, np.ndarray
+            ), "Keyword argument `color` should be a numpy array."
+            assert color.shape == (
+                4,
+            ), "Keyword argument color should be a 1D array with 4 elements: RGBA."
+            assert np.all(color >= 0) and np.all(
+                color <= 1
+            ), "Keyword argument color should be in the range of [0, 1]."
+            self.material.diffuse_color = tuple(color)
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """
+        Sets a keyframe at the given frame.
+
+        Parameters
+        ----------
+        keyframe : int
+        """
+        self.object.keyframe_insert(data_path="location", frame=keyframe)
+        self.object.keyframe_insert(data_path="rotation_euler", frame=keyframe)
+        self.object.keyframe_insert(data_path="scale", frame=keyframe)
+        self.material.keyframe_insert(data_path="diffuse_color", frame=keyframe)
+
+
 # TODO: Will be implemented in the future
 class Frustum(KeyFrameControlMixin):  # pragma: no cover
     """
@@ -683,6 +887,99 @@ class Frustum(KeyFrameControlMixin):  # pragma: no cover
 
     def update_keyframe(self, keyframe: int) -> None:
         raise NotImplementedError
+
+
+class Plane(KeyFrameControlMixin):
+    """
+    A flat rectangular mesh plane in Blender.
+
+    The plane is centred at ``location`` and lies in the XY plane by default.
+    ``size`` is the full edge length, so a ``size`` of 100 gives a
+    100 × 100 unit square.
+
+    Parameters
+    ----------
+    size : float, optional
+        Edge length of the square plane. Default is 1.0.
+    location : NDArray or None, optional
+        Centre of the plane as (x, y, z). Default is None (origin).
+    """
+
+    input_states: set[str] = set()
+
+    def __init__(
+        self,
+        size: float = 1.0,
+        location: NDArray | None = None,
+    ) -> None:
+        loc = (0.0, 0.0, 0.0) if location is None else tuple(location)
+        bpy.ops.mesh.primitive_plane_add(size=size, location=loc)
+        self._obj: bpy.types.Object = bpy.context.object
+        self._material = bpy.data.materials.new(
+            name=f"{self._obj.name}_material"
+        )
+        self._obj.data.materials.append(self._material)
+
+    @classmethod
+    def create(
+        cls,
+        states: dict,
+        size: float = 1.0,
+        location: NDArray | None = None,
+    ) -> "Plane":
+        """
+        Factory method to create a Plane.
+
+        Parameters
+        ----------
+        states : dict
+            Unused; present for API consistency.
+        size : float, optional
+            Edge length of the square plane. Default is 1.0.
+        location : NDArray or None, optional
+            Centre position (x, y, z). Default is None (origin).
+        """
+        return cls(size, location)
+
+    @property
+    def material(self) -> bpy.types.Material:
+        """Return the Blender material of the plane."""
+        return self._material
+
+    @property
+    def object(self) -> bpy.types.Object:
+        """Return the Blender object of the plane."""
+        return self._obj
+
+    def update_states(self, location: NDArray | None = None) -> None:
+        """
+        Move the plane to a new centre location.
+
+        Parameters
+        ----------
+        location : NDArray or None, optional
+            New centre position (x, y, z). If None, position is unchanged.
+        """
+        if location is not None:
+            self._obj.location = tuple(location)
+
+    def update_material(self, **kwargs: dict) -> None:
+        """
+        Update the diffuse color of the plane material.
+
+        Parameters
+        ----------
+        color : NDArray
+            RGBA array of shape (4,), values in [0, 1].
+        """
+        if "color" in kwargs:
+            color = np.asarray(kwargs["color"])
+            assert color.shape == (4,), "color must be a (4,) RGBA array"
+            self._material.diffuse_color = tuple(color)
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """Set a location keyframe on the plane."""
+        self._obj.keyframe_insert(data_path="location", frame=keyframe)
 
 
 if TYPE_CHECKING:
