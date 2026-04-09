@@ -6,7 +6,7 @@ from importlib import metadata as importlib_metadata
 import bpy
 
 from ._camera import Camera
-from ._light import Light, Sun
+from ._light import Light
 
 # Exposed functions and classes (API)
 # Note: These should not be imported within the package to avoid circular imports
