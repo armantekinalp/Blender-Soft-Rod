@@ -1,9 +1,36 @@
-""" file.py contains functions useful in handling .blend files using bpy """
+"""file.py contains functions useful in handling .blend files using bpy"""
 
 from pathlib import Path
 
 import bpy
 from mathutils import Vector
+
+
+def load(path: Path | str) -> None:
+    """
+    Opens an existing .blend file, replacing the current Blender session.
+
+    Parameters
+    ----------
+    path : Path | str
+        Path to the .blend file to open.
+
+    Raises
+    ------
+    TypeError
+        If the type of the path parameter is not a Path or string.
+    FileNotFoundError
+        If the file does not exist.
+    """
+    if isinstance(path, str):
+        path = Path(path)
+    elif not isinstance(path, Path):
+        raise TypeError(
+            f"Type of path should be either Path or str. Given: {type(path)}"
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    bpy.ops.wm.open_mainfile(filepath=str(path))
 
 
 def save(path: Path | str) -> bool:

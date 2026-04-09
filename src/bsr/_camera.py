@@ -50,6 +50,28 @@ class Camera(KeyFrameControlMixin):
         self._camera.keyframe_insert(data_path="location", frame=keyframe)
         self._camera.keyframe_insert(data_path="rotation_euler", frame=keyframe)
 
+    @property
+    def focal_length(self) -> float:
+        """
+        Return the camera focal length in millimetres.
+        """
+        return self._camera.data.lens
+
+    @focal_length.setter
+    def focal_length(self, value: float) -> None:
+        """
+        Set the camera focal length in millimetres.
+
+        Parameters
+        ----------
+        value : float
+            Focal length in mm (e.g. 24 wide, 50 standard, 85 portrait).
+        """
+        assert (
+            isinstance(value, (int, float)) and value > 0
+        ), "focal_length must be a positive number"
+        self._camera.data.lens = float(value)
+
     def set_film_transparent(self, transparent: bool = True) -> None:
         """
         Set the film transparency for rendering.
