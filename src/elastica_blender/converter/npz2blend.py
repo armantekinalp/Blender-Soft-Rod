@@ -21,6 +21,7 @@ def confirm_pyelastica_npz_structure(
     tags: list[str] | None = None,
     finned_spline_rod: bool = False,
     annulus_rod: bool = False,
+    rect_annulus_rod: bool = False,
 ) -> None:
     data = np.load(path)
     keys = list(data.keys())
@@ -32,7 +33,7 @@ def confirm_pyelastica_npz_structure(
             required_key_pattern.append(tag + "_position_history")
             if finned_spline_rod:
                 required_key_pattern.append(tag + "_dilatation_history")
-                required_key_pattern.append(tag + "_director_history")
+                required_key_pattern.append(tag + "_fin_direction_history")
                 required_key_pattern.append(tag + "_r_rectangle_center")
                 required_key_pattern.append(tag + "_half_fin_span")
                 required_key_pattern.append(tag + "_fin_thickness")
@@ -46,13 +47,18 @@ def confirm_pyelastica_npz_structure(
                 required_key_pattern.append(
                     tag + "_inner_to_outer_radius_ratio"
                 )
+            elif rect_annulus_rod:
+                required_key_pattern.append(tag + "_dilatation_history")
+                required_key_pattern.append(tag + "_rect_width")
+                required_key_pattern.append(tag + "_rect_depth")
+                required_key_pattern.append(tag + "_bore_radius")
             else:
                 required_key_pattern.append(tag + "_radius_history")
     else:
         required_key_pattern.append("position_history")
         if finned_spline_rod:
             required_key_pattern.append("dilatation_history")
-            required_key_pattern.append("director_history")
+            required_key_pattern.append("fin_direction_history")
             required_key_pattern.append("r_rectangle_center")
             required_key_pattern.append("half_fin_span")
             required_key_pattern.append("fin_thickness")
@@ -62,6 +68,11 @@ def confirm_pyelastica_npz_structure(
             required_key_pattern.append("dilatation_history")
             required_key_pattern.append("pipe_outer_radius")
             required_key_pattern.append("inner_to_outer_radius_ratio")
+        elif rect_annulus_rod:
+            required_key_pattern.append("dilatation_history")
+            required_key_pattern.append("rect_width")
+            required_key_pattern.append("rect_depth")
+            required_key_pattern.append("bore_radius")
         else:
             required_key_pattern.append("radius_history")
 
@@ -80,6 +91,7 @@ def construct_blender_file(
     spline_rod: bool = False,
     finned_spline_rod: bool = False,
     annulus_rod: bool = False,
+    rect_annulus_rod: bool = False,
 ) -> None:
     """
     Read npz file containing the position and radius data of multiple elastica rods.
@@ -131,6 +143,7 @@ def construct_blender_file(
         tags,
         finned_spline_rod=finned_spline_rod,
         annulus_rod=annulus_rod,
+        rect_annulus_rod=rect_annulus_rod,
     )
     data = np.load(path)
 
@@ -145,7 +158,7 @@ def construct_blender_file(
         position_history = data["position_history"]
         if finned_spline_rod:
             dilatation_history = data["dilatation_history"]
-            director_history = data["director_history"]
+            fin_direction_history = data["fin_direction_history"]
             r_rectangle_center = data["r_rectangle_center"]
             half_fin_span = data["half_fin_span"]
             fin_thickness = data["fin_thickness"]
@@ -154,7 +167,7 @@ def construct_blender_file(
             rect_init_state = {
                 "positions": position_history[:, 0, ...],
                 "dilatation": dilatation_history[:, 0, ...],
-                "directors": director_history[:, 0, ...],
+                "fin_direction": fin_direction_history[:, 0, ...],
                 "r_rectangle_center": r_rectangle_center,
                 "half_fin_span": half_fin_span,
                 "fin_thickness": fin_thickness,
@@ -166,7 +179,7 @@ def construct_blender_file(
                 rect_rods.update_states(
                     position_history[:, tidx, ...],
                     dilatation_history[:, tidx, ...],
-                    director_history[:, tidx, ...],
+                    fin_direction_history[:, tidx, ...],
                 )
                 rect_rods.update_keyframe(tidx)
         elif annulus_rod:
@@ -186,6 +199,27 @@ def construct_blender_file(
                     dilatation_history[:, tidx, ...],
                 )
                 annulus_rods.update_keyframe(tidx)
+        elif rect_annulus_rod:
+            dilatation_history = data["dilatation_history"]
+            rect_width = data["rect_width"]
+            rect_depth = data["rect_depth"]
+            bore_radius = data["bore_radius"]
+            rect_annulus_init_state = {
+                "positions": position_history[:, 0, ...],
+                "dilatation": dilatation_history[:, 0, ...],
+                "rect_width": rect_width,
+                "rect_depth": rect_depth,
+                "bore_radius": bore_radius,
+            }
+            rect_annulus_rods = bsr.create_rect_annulus_rod_collection(
+                rect_annulus_init_state
+            )
+            for tidx, _ in tqdm(enumerate(time), total=len(time)):
+                rect_annulus_rods.update_states(
+                    position_history[:, tidx, ...],
+                    dilatation_history[:, tidx, ...],
+                )
+                rect_annulus_rods.update_keyframe(tidx)
         elif spline_rod:
             radius_history = data["radius_history"]
             init_state = {
@@ -215,7 +249,7 @@ def construct_blender_file(
             position_history = data[tag + "_position_history"]
             if finned_spline_rod:
                 dilatation_history = data[tag + "_dilatation_history"]
-                director_history = data[tag + "_director_history"]
+                fin_direction_history = data[tag + "_fin_direction_history"]
                 r_rectangle_center = data[tag + "_r_rectangle_center"]
                 half_fin_span = data[tag + "_half_fin_span"]
                 fin_thickness = data[tag + "_fin_thickness"]
@@ -226,7 +260,7 @@ def construct_blender_file(
                 rect_init_state = {
                     "positions": position_history[:, 0, ...],
                     "dilatation": dilatation_history[:, 0, ...],
-                    "directors": director_history[:, 0, ...],
+                    "fin_direction": fin_direction_history[:, 0, ...],
                     "r_rectangle_center": r_rectangle_center,
                     "half_fin_span": half_fin_span,
                     "fin_thickness": fin_thickness,
@@ -240,7 +274,7 @@ def construct_blender_file(
                     rect_rods.update_states(
                         position_history[:, tidx, ...],
                         dilatation_history[:, tidx, ...],
-                        director_history[:, tidx, ...],
+                        fin_direction_history[:, tidx, ...],
                     )
                     rect_rods.update_keyframe(tidx)
             elif annulus_rod:
@@ -264,6 +298,27 @@ def construct_blender_file(
                         dilatation_history[:, tidx, ...],
                     )
                     annulus_rods.update_keyframe(tidx)
+            elif rect_annulus_rod:
+                dilatation_history = data[tag + "_dilatation_history"]
+                rect_width = data[tag + "_rect_width"]
+                rect_depth = data[tag + "_rect_depth"]
+                bore_radius = data[tag + "_bore_radius"]
+                rect_annulus_init_state = {
+                    "positions": position_history[:, 0, ...],
+                    "dilatation": dilatation_history[:, 0, ...],
+                    "rect_width": rect_width,
+                    "rect_depth": rect_depth,
+                    "bore_radius": bore_radius,
+                }
+                rect_annulus_rods = bsr.create_rect_annulus_rod_collection(
+                    rect_annulus_init_state
+                )
+                for tidx, _ in tqdm(enumerate(time), total=len(time)):
+                    rect_annulus_rods.update_states(
+                        position_history[:, tidx, ...],
+                        dilatation_history[:, tidx, ...],
+                    )
+                    rect_annulus_rods.update_keyframe(tidx)
             elif spline_rod:
                 radius_history = data[tag + "_radius_history"]
                 init_state = {
@@ -344,6 +399,14 @@ def construct_blender_file(
     "Requires position_history, dilatation_history, pipe_outer_radius, and "
     "inner_to_outer_radius_ratio in the NPZ file.",
 )
+@click.option(
+    "--rect-annulus-rod",
+    is_flag=True,
+    default=False,
+    help="Use RectAnnulusRodStack to render each rod as a rectangular tube with a circular bore. "
+    "Requires position_history, dilatation_history, rect_width, rect_depth, and "
+    "bore_radius in the NPZ file.",
+)
 def main(
     path: Path,
     output: Path,
@@ -352,6 +415,7 @@ def main(
     spline_rod: bool,
     finned_spline_rod: bool,
     annulus_rod: bool,
+    rect_annulus_rod: bool,
 ) -> None:  # pragma: no cover
     construct_blender_file(
         path,
@@ -361,4 +425,5 @@ def main(
         spline_rod,
         finned_spline_rod,
         annulus_rod,
+        rect_annulus_rod,
     )

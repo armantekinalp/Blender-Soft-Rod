@@ -9,6 +9,7 @@ __all__ = [
     "RodWithSpline",
     "FinnedRodWithSpline",
     "AnnulusRodWithSpline",
+    "RectAnnulusRodWithSpline",
 ]
 
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ from bsr.geometry.primitives.pipe import (
     BezierSplineAnnulusPipe,
     BezierSplineFinnedPipe,
     BezierSplinePipe,
+    BezierSplineRectAnnulusPipe,
 )
 from bsr.geometry.primitives.simple import Box, Cylinder, Sphere
 from bsr.geometry.protocol import CompositeProtocol
@@ -532,7 +534,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
     The nominal cross-section geometry (``half_fin_span``, ``fin_thickness``,
     ``pipe_outer_radius``, ``inner_to_outer_radius_ratio``) and the fin offset
     distance (``r_rectangle_center``) are fixed at construction time.  Per-frame
-    updates are driven by ``positions``, ``dilatation``, and ``directors``.
+    updates are driven by ``positions``, ``dilatation``, and ``fin_direction``.
 
     Parameters
     ----------
@@ -544,8 +546,8 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
     r_rectangle_center : NDArray
         Distance from the centerline to each fin's centre along d1, per element.
         Shape: (n_elems,).  Fixed at construction; not updated per frame.
-    directors : NDArray
-        Director frames. Shape: (3, 3, n_elems). ``directors[0]`` is d1.
+    fin_direction : NDArray
+        Element-based fin direction (d1). Shape: (3, n_elems).
     half_fin_span : float
         Half-span (nominal width) of each rectangular fin cross-section. Default 1.0.
     fin_thickness : float
@@ -562,7 +564,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         "positions",
         "dilatation",
         "r_rectangle_center",
-        "directors",
+        "fin_direction",
     }
 
     def __init__(
@@ -570,7 +572,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         positions: NDArray,
         dilatation: NDArray,
         r_rectangle_center: NDArray,
-        directors: NDArray,
+        fin_direction: NDArray,
         half_fin_span: float = 1.0,
         fin_thickness: float = 1.0,
         pipe_outer_radius: float | None = None,
@@ -579,7 +581,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
     ) -> None:
         node_dilatation = self._element_to_node_values(dilatation)
         node_r = self._element_to_node_values(r_rectangle_center)
-        node_d1 = self._element_to_node_director(directors[0])
+        node_d1 = self._element_to_node_fin_direction(fin_direction)
         self._pipe = BezierSplineFinnedPipe(
             positions,
             node_dilatation,
@@ -606,19 +608,19 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         return node_values
 
     @staticmethod
-    def _element_to_node_director(d1: NDArray) -> NDArray:
+    def _element_to_node_fin_direction(d1: NDArray) -> NDArray:
         """
-        Convert element-based director (3, n_elems) to node-based (3, n_nodes).
+        Convert element-based fin direction (3, n_elems) to node-based (3, n_nodes).
 
-        End nodes keep their sole adjacent element's director. Interior nodes
-        receive the normalised average of the two neighbouring element directors.
+        End nodes keep their sole adjacent element's fin direction. Interior nodes
+        receive the normalised average of the two neighbouring element fin directions.
         """
         n_elems = d1.shape[-1]
         n_nodes = n_elems + 1
         node_d1 = np.empty((3, n_nodes))
         node_d1[:, 0] = d1[:, 0]
         node_d1[:, -1] = d1[:, -1]
-        avg = (d1[:, :-1] + d1[:, 1:]) / 2.0  # (3, n_nodes-2)
+        avg = (d1[:, :-1] + d1[:, 1:]) / 2.0
         norms = np.linalg.norm(avg, axis=0, keepdims=True)
         norms = np.where(norms > 0, norms, 1.0)
         node_d1[:, 1:-1] = avg / norms
@@ -656,7 +658,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         ----------
         states : dict[str, NDArray]
             Must contain: ``positions`` (3, n_nodes), ``dilatation`` (n_elems,),
-            ``r_rectangle_center`` (n_elems,), ``directors`` (3, 3, n_elems).
+            ``r_rectangle_center`` (n_elems,), ``fin_direction`` (3, n_elems).
             May also contain ``half_fin_span``, ``fin_thickness``,
             ``pipe_outer_radius``, and ``inner_to_outer_radius_ratio`` as
             per-rod scalars.
@@ -685,7 +687,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
             states["positions"],
             states["dilatation"],
             states["r_rectangle_center"],
-            states["directors"],
+            states["fin_direction"],
             _half_fin_span,
             _fin_thickness,
             _pipe_outer_radius,
@@ -697,10 +699,10 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         self,
         positions: NDArray,
         dilatation: NDArray,
-        directors: NDArray,
+        fin_direction: NDArray,
     ) -> None:
         """
-        Update positions, dilatation, and directors for the current frame.
+        Update positions, dilatation, and fin_direction for the current frame.
 
         Parameters
         ----------
@@ -708,8 +710,8 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
             Shape: (3, n_nodes).
         dilatation : NDArray
             Element stretch ratio. Shape: (n_elems,).
-        directors : NDArray
-            Director frames. Shape: (3, 3, n_elems). ``directors[0]`` is d1.
+        fin_direction : NDArray
+            Element-based fin direction (d1). Shape: (3, n_elems).
         """
         assert positions.ndim == 2, "positions must be 2D array"
         assert positions.shape[0] == 3, "positions must have 3 rows"
@@ -720,7 +722,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         self._pipe.update_states(
             positions,
             self._element_to_node_values(dilatation),
-            self._element_to_node_director(directors[0]),
+            self._element_to_node_fin_direction(fin_direction),
         )
 
     def update_material(self, **kwargs: dict[str, Any]) -> None:
@@ -863,6 +865,152 @@ class AnnulusRodWithSpline(KeyFrameControlMixin):
 
     def update_keyframe(self, keyframe: int) -> None:
         """Set keyframe for the annulus pipe."""
+        self._pipe.update_keyframe(keyframe)
+
+
+class RectAnnulusRodWithSpline(KeyFrameControlMixin):
+    """
+    Rod class rendering a rectangular-tube-with-circular-bore pipe in Blender.
+
+    Wraps ``BezierSplineRectAnnulusPipe``. Converts element-based ``dilatation``
+    to node-based before delegating to the pipe primitive.
+
+    The cross-section geometry (``rect_width``, ``rect_depth``, ``bore_radius``)
+    is fixed at construction. Per-frame updates are driven by ``positions``
+    and ``dilatation``.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Node positions. Shape: (3, n_nodes).
+    dilatation : NDArray
+        Element stretch ratio. Shape: (n_elems,).
+        Interior node values are averaged from adjacent elements.
+    rect_width : float
+        Full width of the outer rectangle cross-section.
+    rect_depth : float
+        Full depth of the outer rectangle cross-section.
+    bore_radius : float
+        Radius of the circular bore through the center.
+        Must be < min(rect_width, rect_depth) / 2.
+    downsample_num_element : int or None, optional
+        Downsample spine control points. Default is None.
+    """
+
+    input_states = {"positions", "dilatation"}
+
+    def __init__(
+        self,
+        positions: NDArray,
+        dilatation: NDArray,
+        rect_width: float,
+        rect_depth: float,
+        bore_radius: float,
+        downsample_num_element: int | None = None,
+    ) -> None:
+        node_dilatation = self._element_to_node_values(dilatation)
+        self._pipe = BezierSplineRectAnnulusPipe(
+            positions,
+            node_dilatation,
+            rect_width,
+            rect_depth,
+            bore_radius,
+            downsample_num_element,
+        )
+
+    @staticmethod
+    def _element_to_node_values(values: NDArray) -> NDArray:
+        """Convert element-based (n_elems,) to node-based (n_nodes,)."""
+        node_values = np.concatenate([values, [0.0]])
+        node_values[1:] += values
+        node_values[1:-1] /= 2.0
+        return node_values
+
+    @property
+    def material(self) -> bpy.types.Material:
+        """Return the Blender material of the rect-annulus pipe."""
+        return self._pipe.material
+
+    @property
+    def object(self) -> bpy.types.Object:
+        """Return the Blender object of the rect-annulus pipe."""
+        return self._pipe.object
+
+    @classmethod
+    def create(
+        cls,
+        states: dict[str, NDArray],
+        rect_width: float = 1.0,
+        rect_depth: float = 1.0,
+        bore_radius: float = 0.25,
+        downsample_num_element: int | None = None,
+    ) -> "RectAnnulusRodWithSpline":
+        """
+        Factory method to create a new RectAnnulusRodWithSpline.
+
+        ``rect_width``, ``rect_depth``, and ``bore_radius`` can be supplied as
+        keyword arguments or inside ``states`` (scalar or 0-d array). Values
+        found in ``states`` take precedence.
+
+        Parameters
+        ----------
+        states : dict[str, NDArray]
+            Must contain: ``positions`` (3, n_nodes), ``dilatation`` (n_elems,).
+            May also contain ``rect_width``, ``rect_depth``, and ``bore_radius``
+            as per-rod scalars.
+        """
+        _rect_width = (
+            float(states["rect_width"])
+            if "rect_width" in states
+            else rect_width
+        )
+        _rect_depth = (
+            float(states["rect_depth"])
+            if "rect_depth" in states
+            else rect_depth
+        )
+        _bore_radius = (
+            float(states["bore_radius"])
+            if "bore_radius" in states
+            else bore_radius
+        )
+        return cls(
+            states["positions"],
+            states["dilatation"],
+            _rect_width,
+            _rect_depth,
+            _bore_radius,
+            downsample_num_element,
+        )
+
+    def update_states(self, positions: NDArray, dilatation: NDArray) -> None:
+        """
+        Update positions and dilatation for the current frame.
+
+        Parameters
+        ----------
+        positions : NDArray
+            Shape: (3, n_nodes).
+        dilatation : NDArray
+            Element stretch ratio. Shape: (n_elems,).
+        """
+        assert positions.ndim == 2, "positions must be 2D array"
+        assert positions.shape[0] == 3, "positions must have 3 rows"
+        assert dilatation.ndim == 1, "dilatation must be 1D array"
+        assert (
+            positions.shape[-1] == dilatation.shape[-1] + 1
+        ), "dilatation must have n_nodes-1 elements"
+        self._pipe.update_states(
+            positions,
+            self._element_to_node_values(dilatation),
+        )
+
+    def update_material(self, **kwargs: dict[str, Any]) -> None:
+        """Update the material of the rect-annulus pipe."""
+        self._pipe.update_material(**kwargs)
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """Set keyframe for the rect-annulus pipe."""
         self._pipe.update_keyframe(keyframe)
 
 

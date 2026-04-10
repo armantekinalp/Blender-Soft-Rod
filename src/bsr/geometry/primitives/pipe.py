@@ -9,6 +9,7 @@ __all__ = [
     "BezierSplinePipe",
     "BezierSplineFinnedPipe",
     "BezierSplineAnnulusPipe",
+    "BezierSplineRectAnnulusPipe",
 ]
 
 from typing import TYPE_CHECKING, Any, cast
@@ -339,6 +340,99 @@ def _create_bevel_annulus(
     obj.hide_viewport = True
     obj.hide_render = True
     return obj
+
+
+def _create_bevel_rect_annulus(
+    rect_width: float,
+    rect_depth: float,
+    bore_radius: float,
+) -> bpy.types.Object:
+    """
+    Create a 2D bevel profile: filled rectangle with a circular bore.
+
+    A single 2D curve contains two splines:
+    1. Outer rectangle — 4-point Bezier with VECTOR handles.
+    2. Inner circle of radius ``bore_radius`` — 4-point Bezier approximation.
+
+    Blender's even-odd fill rule punches the circle out of the rectangle.
+
+    Parameters
+    ----------
+    rect_width : float
+        Full width of the outer rectangle.
+    rect_depth : float
+        Full depth of the outer rectangle.
+    bore_radius : float
+        Radius of the circular bore. Must be < min(rect_width, rect_depth) / 2.
+    """
+    assert bore_radius < min(rect_width, rect_depth) / 2.0, (
+        f"bore_radius ({bore_radius}) must be smaller than "
+        f"min(rect_width, rect_depth) / 2 = {min(rect_width, rect_depth) / 2.0}"
+    )
+    curve_data = bpy.data.curves.new(name="bevel_rect_annulus", type="CURVE")
+    curve_data.dimensions = "2D"
+
+    # Outer rectangle
+    rect_spline = curve_data.splines.new(type="BEZIER")
+    rect_spline.bezier_points.add(3)  # 4 points total
+    rect_spline.use_cyclic_u = True
+    hw, hd = rect_width / 2.0, rect_depth / 2.0
+    corners = [(-hw, -hd, 0), (hw, -hd, 0), (hw, hd, 0), (-hw, hd, 0)]
+    for i, (x, y, z) in enumerate(corners):
+        pt = rect_spline.bezier_points[i]
+        pt.co = (x, y, z)
+        pt.handle_left_type = pt.handle_right_type = "VECTOR"
+
+    # Inner circular bore
+    _add_bezier_circle_to_curve(curve_data, bore_radius)
+
+    obj = bpy.data.objects.new("bevel_rect_annulus", curve_data)
+    bpy.context.collection.objects.link(obj)
+    obj.hide_viewport = True
+    obj.hide_render = True
+    return obj
+
+
+def _create_rect_annulus_spline(
+    number_of_points: int,
+    rect_width: float,
+    rect_depth: float,
+    bore_radius: float,
+) -> bpy.types.Object:
+    """
+    Create a 3D Bezier spine curve with a rect-annulus bevel profile.
+
+    Parameters
+    ----------
+    number_of_points : int
+        Number of Bezier control points on the spine.
+    rect_width : float
+        Full width of the outer rectangle cross-section.
+    rect_depth : float
+        Full depth of the outer rectangle cross-section.
+    bore_radius : float
+        Radius of the circular bore through the center.
+    """
+    curve_data = bpy.data.curves.new(
+        name="rect_annulus_spline_curve", type="CURVE"
+    )
+    curve_data.dimensions = "3D"
+    spline = curve_data.splines.new(type="BEZIER")
+    spline.bezier_points.add(number_of_points - 1)
+    for i in range(number_of_points):
+        point = spline.bezier_points[i]
+        point.handle_left_type = point.handle_right_type = "FREE"
+    curve_object = bpy.data.objects.new(
+        "rect_annulus_spline_curve_object", curve_data
+    )
+    curve_object.data.resolution_u = 1
+    bpy.context.collection.objects.link(curve_object)
+
+    bevel_obj = _create_bevel_rect_annulus(rect_width, rect_depth, bore_radius)
+    curve_data.bevel_mode = "OBJECT"
+    curve_data.bevel_object = bevel_obj
+    curve_data.use_fill_caps = True
+    return curve_object
 
 
 def _create_circle_spline(
@@ -697,7 +791,7 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         rect_spline.bezier_points.add(3)  # 4 points total
         rect_spline.use_cyclic_u = True
 
-        hw, hd = half_fin_span / 2.0, fin_thickness / 2.0
+        hw, hd = fin_thickness / 2.0, half_fin_span / 2.0
         corners = [(-hw, -hd, 0), (hw, -hd, 0), (hw, hd, 0), (-hw, hd, 0)]
         for i, (x, y, z) in enumerate(corners):
             pt = rect_spline.bezier_points[i]
@@ -931,6 +1025,227 @@ class BezierSplineAnnulusPipe(KeyFrameControlMixin):
 
     def update_keyframe(self, keyframe: int) -> None:
         """Set keyframe for the annulus spine and material."""
+        spline = self._obj.data.splines[0]
+        for point in spline.bezier_points:
+            point.handle_left_type = "AUTO"
+            point.handle_right_type = "AUTO"
+            point.keyframe_insert(data_path="handle_left", frame=keyframe)
+            point.keyframe_insert(data_path="handle_right", frame=keyframe)
+            point.keyframe_insert(data_path="co", frame=keyframe)
+            point.keyframe_insert(data_path="radius", frame=keyframe)
+        self._material.keyframe_insert(
+            data_path="diffuse_color", frame=keyframe
+        )
+
+
+class BezierSplineRectAnnulusPipe(KeyFrameControlMixin):
+    """
+    A single-spine Bezier pipe with a rectangle-with-circular-bore cross-section.
+
+    The bevel profile is a filled rectangle (``rect_width`` × ``rect_depth``) with a
+    circular bore of radius ``bore_radius`` punched through its center, giving the
+    appearance of a rectangular tube with a round internal bore.
+
+    Cross-section geometry is fixed at construction. Per-frame updates drive spine
+    control-point positions and per-node radius scaling
+    (``point.radius = 1 / sqrt(dilatation)`` for an incompressible rod).
+
+    Parameters
+    ----------
+    positions : NDArray
+        Control-point positions. Shape: (3, n_nodes).
+    dilatation : NDArray
+        Stretch ratio at each node. Shape: (n_nodes,).
+    rect_width : float
+        Full width of the outer rectangle cross-section.
+    rect_depth : float
+        Full depth of the outer rectangle cross-section.
+    bore_radius : float
+        Radius of the circular bore through the center.
+        Must be < min(rect_width, rect_depth) / 2.
+    downsample_num_element : int or None, optional
+        Downsample spine control points to this number (min 2). Default is None.
+    """
+
+    input_states = {"positions", "dilatation"}
+    name = "bspline_rect_annulus"
+
+    def __init__(
+        self,
+        positions: NDArray,
+        dilatation: NDArray,
+        rect_width: float,
+        rect_depth: float,
+        bore_radius: float,
+        downsample_num_element: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        assert (
+            downsample_num_element is None or downsample_num_element >= 2
+        ), "downsample_num_element must be at least 2 to include both endpoints"
+        self.downsample_num_element = downsample_num_element
+        number_of_points = positions.shape[1]
+        if downsample_num_element is not None:
+            number_of_points = min(number_of_points, downsample_num_element)
+
+        self._obj = _create_rect_annulus_spline(
+            number_of_points, rect_width, rect_depth, bore_radius
+        )
+        self._obj.name = self.name
+        self._material = bpy.data.materials.new(
+            name=f"{self._obj.name}_material"
+        )
+        self._obj.data.materials.append(self._material)
+
+        self.update_states(positions, dilatation)
+
+    @classmethod
+    def create(
+        cls,
+        states: SplineDataType,
+        rect_width: float = 1.0,
+        rect_depth: float = 1.0,
+        bore_radius: float = 0.25,
+        downsample_num_element: int | None = None,
+    ) -> "BezierSplineRectAnnulusPipe":
+        """
+        Factory method to create a new BezierSplineRectAnnulusPipe.
+
+        Parameters
+        ----------
+        states : SplineDataType
+            Must contain: ``positions`` (3, n_nodes), ``dilatation`` (n_nodes,).
+            May also contain ``rect_width``, ``rect_depth``, and ``bore_radius``
+            as scalars; values found in ``states`` take precedence over keyword defaults.
+        rect_width : float, optional
+            Full width of the outer rectangle. Default is 1.0.
+        rect_depth : float, optional
+            Full depth of the outer rectangle. Default is 1.0.
+        bore_radius : float, optional
+            Radius of the circular bore. Default is 0.25.
+        downsample_num_element : int or None, optional
+            Downsample control points. Default is None.
+        """
+        remaining_keys = set(states.keys()) - {
+            "positions",
+            "dilatation",
+            "rect_width",
+            "rect_depth",
+            "bore_radius",
+        }
+        if remaining_keys:
+            warnings.warn(
+                f"{list(remaining_keys)} are not used as a part of the state definition."
+            )
+        _rect_width = (
+            float(states["rect_width"])
+            if "rect_width" in states
+            else rect_width
+        )
+        _rect_depth = (
+            float(states["rect_depth"])
+            if "rect_depth" in states
+            else rect_depth
+        )
+        _bore_radius = (
+            float(states["bore_radius"])
+            if "bore_radius" in states
+            else bore_radius
+        )
+        return cls(
+            states["positions"],
+            states["dilatation"],
+            _rect_width,
+            _rect_depth,
+            _bore_radius,
+            downsample_num_element,
+        )
+
+    @property
+    def material(self) -> bpy.types.Material:
+        """Access the Blender material."""
+        return self._material
+
+    @property
+    def object(self) -> bpy.types.Object:
+        """Access the Blender object."""
+        return self._obj
+
+    def update_material(self, **kwargs: dict[str, Any]) -> None:
+        """
+        Update the diffuse color of the material.
+
+        Parameters
+        ----------
+        color : NDArray
+            RGBA color array of shape (4,), values in [0, 1].
+        """
+        if "color" in kwargs:
+            color = kwargs["color"]
+            if isinstance(color, (tuple, list)):
+                color = np.array(color)
+            assert isinstance(
+                color, np.ndarray
+            ), "Keyword argument `color` should be a numpy array."
+            assert color.shape == (
+                4,
+            ), "Keyword argument color should be a 1D array with 4 elements: RGBA."
+            assert np.all(color >= 0) and np.all(
+                color <= 1
+            ), "Keyword argument color should be in the range of [0, 1]."
+            self._material.diffuse_color = tuple(color)
+
+    def update_states(
+        self,
+        positions: NDArray | None = None,
+        dilatation: NDArray | None = None,
+    ) -> None:
+        """
+        Update control-point positions and cross-section scale.
+
+        Parameters
+        ----------
+        positions : NDArray, optional
+            New control-point positions. Shape: (3, n_nodes).
+        dilatation : NDArray, optional
+            Stretch ratio at each node. Shape: (n_nodes,).
+            Sets ``point.radius = 1 / sqrt(dilatation)`` at each node.
+        """
+        spline = self._obj.data.splines[0]
+        if positions is not None:
+            _validate_position(positions)
+            pos = self._downsample_data(positions, self.downsample_num_element)
+            for i, point in enumerate(spline.bezier_points):
+                x, y, z = pos[:, i]
+                point.co = (x, y, z)
+        if dilatation is not None:
+            _validate_radii(dilatation)
+            dil = self._downsample_data(
+                dilatation.astype(float, copy=False),
+                self.downsample_num_element,
+            )
+            for i, point in enumerate(spline.bezier_points):
+                point.radius = 1.0 / np.sqrt(dil[i])
+
+    def _downsample_data(
+        self, vector: NDArray, num_elements: int | None
+    ) -> NDArray:
+        if num_elements is None:
+            return vector
+        if vector.shape[-1] <= num_elements:
+            return vector
+        t = np.linspace(0, 1, num_elements)
+        t_old = np.linspace(0, 1, vector.shape[-1])
+        if interp1d is not None:
+            return interp1d(t_old, vector, axis=-1)(t)
+        if vector.ndim == 1:
+            return np.interp(t, t_old, vector)
+        flattened = vector.reshape(-1, vector.shape[-1])
+        downsampled = np.vstack([np.interp(t, t_old, row) for row in flattened])
+        return downsampled.reshape(vector.shape[:-1] + (num_elements,))
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """Set keyframe for the rect-annulus spine and material."""
         spline = self._obj.data.splines[0]
         for point in spline.bezier_points:
             point.handle_left_type = "AUTO"

@@ -8,6 +8,8 @@ __all__ = [
     "create_spline_finned_rod_collection",
     "AnnulusRodStack",
     "create_annulus_rod_collection",
+    "RectAnnulusRodStack",
+    "create_rect_annulus_rod_collection",
 ]
 
 from typing import TYPE_CHECKING, Any, Protocol, Type, overload
@@ -29,6 +31,7 @@ from numpy.typing import NDArray
 from bsr.geometry.composite.rod import (
     AnnulusRodWithSpline,
     FinnedRodWithSpline,
+    RectAnnulusRodWithSpline,
     Rod,
     RodWithSpline,
 )
@@ -236,7 +239,7 @@ class SplineFinnedRodStack(BaseStack):
         "positions",
         "dilatation",
         "r_rectangle_center",
-        "directors",
+        "fin_direction",
         "half_fin_span",
         "fin_thickness",
         "pipe_outer_radius",
@@ -273,11 +276,46 @@ class AnnulusRodStack(BaseStack):
     DefaultType: Type = AnnulusRodWithSpline
 
 
+class RectAnnulusRodStack(BaseStack):
+    """
+    Stack of RectAnnulusRodWithSpline objects.
+
+    Each rod is rendered as a rectangular-tube-with-circular-bore pipe swept
+    along a Bezier spine.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Shape: (n_rods, 3, n_nodes).
+    dilatation : NDArray
+        Shape: (n_rods, n_elems).
+    rect_width : NDArray
+        Full width of the outer rectangle per rod. Shape: (n_rods,).
+        Fixed at construction; not updated per frame.
+    rect_depth : NDArray
+        Full depth of the outer rectangle per rod. Shape: (n_rods,).
+        Fixed at construction; not updated per frame.
+    bore_radius : NDArray
+        Circular bore radius per rod. Shape: (n_rods,).
+        Fixed at construction; not updated per frame.
+    """
+
+    input_states = {
+        "positions",
+        "dilatation",
+        "rect_width",
+        "rect_depth",
+        "bore_radius",
+    }
+    DefaultType: Type = RectAnnulusRodWithSpline
+
+
 # Alias for factory functions
 create_rod_collection = RodStack.create
 create_spline_rod_collection = SplineRodStack.create
 create_spline_finned_rod_collection = SplineFinnedRodStack.create
 create_annulus_rod_collection = AnnulusRodStack.create
+create_rect_annulus_rod_collection = RectAnnulusRodStack.create
 
 if TYPE_CHECKING:
     data: dict[str, NDArray] = {
