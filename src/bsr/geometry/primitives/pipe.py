@@ -519,8 +519,12 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
     node_d1 : NDArray
         First-director unit vector at each node.  Shape: (3, n_nodes).
         Changes every frame; pass updated values to ``update_states``.
-    half_fin_span : float
+    half_fin_span : float or NDArray
         Half-span (nominal width) of each rectangular fin cross-section (along local X).
+        When a scalar ``float``, the same span is used for the entire rod.
+        When a 1-D ``NDArray`` of shape ``(n_elems,)``, each element gets its
+        own bevel rectangle with the corresponding span, enabling spatially
+        varying fin geometry along the rod.
     fin_thickness : float
         Nominal thickness (depth) of each rectangular fin cross-section (along local Y).
     pipe_outer_radius : float or None, optional
@@ -532,6 +536,7 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         Must be in (0, 1).  Default is None (solid circle).
     downsample_num_element : int or None, optional
         If provided, downsample spine control points to this number (min 2).
+        Only used for the uniform-span (scalar) path.
         Default is None (no downsampling).
     """
 
@@ -544,46 +549,84 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         dilatation: NDArray,
         node_r_rectangle_center: NDArray,
         node_d1: NDArray,
-        half_fin_span: float,
+        half_fin_span: float | NDArray,
         fin_thickness: float,
         pipe_outer_radius: float | None = None,
         inner_to_outer_radius_ratio: float | None = None,
         downsample_num_element: int | None = None,
         **kwargs: Any,
     ) -> None:
-        assert (
-            downsample_num_element is None or downsample_num_element >= 2
-        ), "downsample_num_element must be at least 2 to include both endpoints"
-        self.downsample_num_element = downsample_num_element
-        number_of_points = positions.shape[1]
-        if downsample_num_element is not None:
-            number_of_points = min(number_of_points, downsample_num_element)
-
         self._node_r_rectangle_center = node_r_rectangle_center
+        self._varying_span = np.ndim(half_fin_span) > 0
 
-        # Two rectangular fin spines
-        self._fin1_obj = self._create_rect_spine(
-            number_of_points, half_fin_span, fin_thickness
-        )
-        self._fin1_material = bpy.data.materials.new(
-            name=f"{self._fin1_obj.name}_material"
-        )
-        self._fin1_obj.data.materials.append(self._fin1_material)
+        if self._varying_span:
+            half_fin_span_arr = np.asarray(half_fin_span, dtype=float)
+            assert (
+                half_fin_span_arr.ndim == 1
+            ), "half_fin_span array must be 1-D with shape (n_elems,)"
+            n_elems = positions.shape[1] - 1
+            assert len(half_fin_span_arr) == n_elems, (
+                f"half_fin_span array length ({len(half_fin_span_arr)}) must equal "
+                f"n_elems ({n_elems})"
+            )
+            self._fin1_objs, self._fin1_materials = (
+                self._create_per_element_rect_spine(
+                    half_fin_span_arr, fin_thickness
+                )
+            )
+            self._fin2_objs, self._fin2_materials = (
+                self._create_per_element_rect_spine(
+                    half_fin_span_arr, fin_thickness
+                )
+            )
+            # Aliases used by shared helpers (material property, update_material)
+            self._fin1_obj = None
+            self._fin2_obj = None
+            self._fin1_material = None
+            self._fin2_material = None
+        else:
+            assert (
+                downsample_num_element is None or downsample_num_element >= 2
+            ), "downsample_num_element must be at least 2 to include both endpoints"
+            number_of_points = positions.shape[1]
+            if downsample_num_element is not None:
+                number_of_points = min(number_of_points, downsample_num_element)
 
-        self._fin2_obj = self._create_rect_spine(
-            number_of_points, half_fin_span, fin_thickness
-        )
-        self._fin2_material = bpy.data.materials.new(
-            name=f"{self._fin2_obj.name}_material"
-        )
-        self._fin2_obj.data.materials.append(self._fin2_material)
+            self._fin1_obj = self._create_rect_spine(
+                number_of_points, float(half_fin_span), fin_thickness
+            )
+            self._fin1_material = bpy.data.materials.new(
+                name=f"{self._fin1_obj.name}_material"
+            )
+            self._fin1_obj.data.materials.append(self._fin1_material)
+
+            self._fin2_obj = self._create_rect_spine(
+                number_of_points, float(half_fin_span), fin_thickness
+            )
+            self._fin2_material = bpy.data.materials.new(
+                name=f"{self._fin2_obj.name}_material"
+            )
+            self._fin2_obj.data.materials.append(self._fin2_material)
+
+            self._fin1_objs = []
+            self._fin2_objs = []
+            self._fin1_materials = []
+            self._fin2_materials = []
+
+        self.downsample_num_element = downsample_num_element
 
         # Optional annulus / solid circle spine at the centerline
         self._circle_obj: bpy.types.Object | None = None
         self._circle_material: bpy.types.Material | None = None
         if pipe_outer_radius is not None:
+            if self._varying_span:
+                n_pts = positions.shape[1]
+            else:
+                n_pts = positions.shape[1]
+                if downsample_num_element is not None:
+                    n_pts = min(n_pts, downsample_num_element)
             self._circle_obj = _create_circle_spline(
-                number_of_points, pipe_outer_radius, inner_to_outer_radius_ratio
+                n_pts, pipe_outer_radius, inner_to_outer_radius_ratio
             )
             self._circle_material = bpy.data.materials.new(
                 name=f"{self._circle_obj.name}_material"
@@ -596,7 +639,7 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
     def create(
         cls,
         states: SplineDataType,
-        half_fin_span: float = 1.0,
+        half_fin_span: float | NDArray = 1.0,
         fin_thickness: float = 1.0,
         pipe_outer_radius: float | None = None,
         inner_to_outer_radius_ratio: float | None = None,
@@ -633,10 +676,17 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
     @property
     def material(self) -> dict[str, bpy.types.Material]:
         """Return a dict of all materials keyed by component name."""
-        mats: dict[str, bpy.types.Material] = {
-            "fin1": self._fin1_material,
-            "fin2": self._fin2_material,
-        }
+        if self._varying_span:
+            mats: dict[str, bpy.types.Material] = {}
+            for i, m in enumerate(self._fin1_materials):
+                mats[f"fin1_{i}"] = m
+            for i, m in enumerate(self._fin2_materials):
+                mats[f"fin2_{i}"] = m
+        else:
+            mats = {
+                "fin1": self._fin1_material,
+                "fin2": self._fin2_material,
+            }
         if self._circle_material is not None:
             mats["circle"] = self._circle_material
         return mats
@@ -644,10 +694,17 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
     @property
     def object(self) -> dict[str, bpy.types.Object]:
         """Return a dict of all Blender objects keyed by component name."""
-        objs: dict[str, bpy.types.Object] = {
-            "fin1": self._fin1_obj,
-            "fin2": self._fin2_obj,
-        }
+        if self._varying_span:
+            objs: dict[str, bpy.types.Object] = {}
+            for i, o in enumerate(self._fin1_objs):
+                objs[f"fin1_{i}"] = o
+            for i, o in enumerate(self._fin2_objs):
+                objs[f"fin2_{i}"] = o
+        else:
+            objs = {
+                "fin1": self._fin1_obj,
+                "fin2": self._fin2_obj,
+            }
         if self._circle_obj is not None:
             objs["circle"] = self._circle_obj
         return objs
@@ -674,10 +731,17 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
             assert np.all(color >= 0) and np.all(
                 color <= 1
             ), "Keyword argument color should be in the range of [0, 1]."
-            self._fin1_material.diffuse_color = tuple(color)
-            self._fin2_material.diffuse_color = tuple(color)
+            color_tuple = tuple(color)
+            if self._varying_span:
+                for m in self._fin1_materials:
+                    m.diffuse_color = color_tuple
+                for m in self._fin2_materials:
+                    m.diffuse_color = color_tuple
+            else:
+                self._fin1_material.diffuse_color = color_tuple
+                self._fin2_material.diffuse_color = color_tuple
             if self._circle_material is not None:
-                self._circle_material.diffuse_color = tuple(color)
+                self._circle_material.diffuse_color = color_tuple
 
     def update_states(
         self,
@@ -703,8 +767,12 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         fin2_pos = (
             positions - self._node_r_rectangle_center[np.newaxis, :] * node_d1
         )
-        self._update_spine(self._fin1_obj, fin1_pos, dilatation)
-        self._update_spine(self._fin2_obj, fin2_pos, dilatation)
+        if self._varying_span:
+            self._update_per_element_fins(self._fin1_objs, fin1_pos, dilatation)
+            self._update_per_element_fins(self._fin2_objs, fin2_pos, dilatation)
+        else:
+            self._update_spine(self._fin1_obj, fin1_pos, dilatation)
+            self._update_spine(self._fin2_obj, fin2_pos, dilatation)
         if self._circle_obj is not None:
             self._update_spine(self._circle_obj, positions, dilatation)
 
@@ -726,6 +794,33 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         )
         for i, point in enumerate(spline.bezier_points):
             point.radius = 1.0 / np.sqrt(dil[i])
+
+    @staticmethod
+    def _update_per_element_fins(
+        fin_objs: list,
+        fin_positions: NDArray,
+        dilatation: NDArray,
+    ) -> None:
+        """Update per-element fin curves (varying-span path).
+
+        Parameters
+        ----------
+        fin_objs : list of bpy.types.Object
+            One 2-point Bezier curve per element.
+        fin_positions : NDArray
+            Node-based fin spine positions. Shape: (3, n_nodes).
+        dilatation : NDArray
+            Node-based dilatation. Shape: (n_nodes,).
+        """
+        _validate_position(fin_positions)
+        _validate_radii(dilatation)
+        for elem_idx, obj in enumerate(fin_objs):
+            spline = obj.data.splines[0]
+            for local_pt_idx, node_idx in enumerate([elem_idx, elem_idx + 1]):
+                pt = spline.bezier_points[local_pt_idx]
+                x, y, z = fin_positions[:, node_idx]
+                pt.co = (x, y, z)
+                pt.radius = 1.0 / np.sqrt(float(dilatation[node_idx]))
 
     def _downsample_data(
         self, vector: NDArray, num_elements: int | None
@@ -780,6 +875,56 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
         return curve_object
 
     @staticmethod
+    def _create_per_element_rect_spine(
+        half_fin_span: NDArray,
+        fin_thickness: float,
+    ) -> tuple[list, list]:
+        """Create one 2-point Bezier curve per element, each with its own bevel.
+
+        Parameters
+        ----------
+        half_fin_span : NDArray
+            Per-element half-span values. Shape: (n_elems,).
+        fin_thickness : float
+            Fin thickness shared across all elements.
+
+        Returns
+        -------
+        tuple of (list of Objects, list of Materials)
+        """
+        objects = []
+        materials = []
+        for span in half_fin_span:
+            curve_data = bpy.data.curves.new(
+                name="fin_spline_curve", type="CURVE"
+            )
+            curve_data.dimensions = "3D"
+            spline = curve_data.splines.new(type="BEZIER")
+            spline.bezier_points.add(1)  # 2 points total
+            for point in spline.bezier_points:
+                point.handle_left_type = point.handle_right_type = "FREE"
+
+            curve_obj = bpy.data.objects.new(
+                "fin_spline_curve_object", curve_data
+            )
+            curve_obj.data.resolution_u = 1
+            bpy.context.collection.objects.link(curve_obj)
+
+            bevel_rect = BezierSplineFinnedPipe._create_bevel_rectangle(
+                float(span), fin_thickness
+            )
+            curve_data.bevel_mode = "OBJECT"
+            curve_data.bevel_object = bevel_rect
+            curve_data.use_fill_caps = True
+
+            mat = bpy.data.materials.new(name=f"{curve_obj.name}_material")
+            curve_obj.data.materials.append(mat)
+
+            objects.append(curve_obj)
+            materials.append(mat)
+        return objects, materials
+
+    @staticmethod
     def _create_bevel_rectangle(
         half_fin_span: float, fin_thickness: float
     ) -> bpy.types.Object:
@@ -806,14 +951,22 @@ class BezierSplineFinnedPipe(KeyFrameControlMixin):
 
     def update_keyframe(self, keyframe: int) -> None:
         """Set keyframes for all spines and materials."""
-        self._keyframe_spine(self._fin1_obj, keyframe)
-        self._fin1_material.keyframe_insert(
-            data_path="diffuse_color", frame=keyframe
-        )
-        self._keyframe_spine(self._fin2_obj, keyframe)
-        self._fin2_material.keyframe_insert(
-            data_path="diffuse_color", frame=keyframe
-        )
+        if self._varying_span:
+            for obj, mat in zip(self._fin1_objs, self._fin1_materials):
+                self._keyframe_spine(obj, keyframe)
+                mat.keyframe_insert(data_path="diffuse_color", frame=keyframe)
+            for obj, mat in zip(self._fin2_objs, self._fin2_materials):
+                self._keyframe_spine(obj, keyframe)
+                mat.keyframe_insert(data_path="diffuse_color", frame=keyframe)
+        else:
+            self._keyframe_spine(self._fin1_obj, keyframe)
+            self._fin1_material.keyframe_insert(
+                data_path="diffuse_color", frame=keyframe
+            )
+            self._keyframe_spine(self._fin2_obj, keyframe)
+            self._fin2_material.keyframe_insert(
+                data_path="diffuse_color", frame=keyframe
+            )
         if self._circle_obj is not None:
             self._keyframe_spine(self._circle_obj, keyframe)
             self._circle_material.keyframe_insert(

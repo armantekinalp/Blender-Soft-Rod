@@ -548,8 +548,11 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         Shape: (n_elems,).  Fixed at construction; not updated per frame.
     fin_direction : NDArray
         Element-based fin direction (d1). Shape: (3, n_elems).
-    half_fin_span : float
+    half_fin_span : float or NDArray
         Half-span (nominal width) of each rectangular fin cross-section. Default 1.0.
+        When a scalar, the same span is applied to all elements.
+        When a 1-D array of shape ``(n_elems,)``, each element gets its own span,
+        enabling spatially varying fin geometry along the rod.
     fin_thickness : float
         Nominal thickness (depth) of each rectangular fin cross-section. Default 1.0.
     pipe_outer_radius : float or None, optional
@@ -573,7 +576,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
         dilatation: NDArray,
         r_rectangle_center: NDArray,
         fin_direction: NDArray,
-        half_fin_span: float = 1.0,
+        half_fin_span: float | NDArray = 1.0,
         fin_thickness: float = 1.0,
         pipe_outer_radius: float | None = None,
         inner_to_outer_radius_ratio: float | None = None,
@@ -640,7 +643,7 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
     def create(
         cls,
         states: dict[str, NDArray],
-        half_fin_span: float = 1.0,
+        half_fin_span: float | NDArray = 1.0,
         fin_thickness: float = 1.0,
         pipe_outer_radius: float | None = None,
         inner_to_outer_radius_ratio: float | None = None,
@@ -651,23 +654,23 @@ class FinnedRodWithSpline(KeyFrameControlMixin):
 
         ``half_fin_span``, ``fin_thickness``, ``pipe_outer_radius``, and
         ``inner_to_outer_radius_ratio`` can be supplied as keyword arguments
-        or inside ``states`` (scalar or 0-d array). Values found in ``states``
-        take precedence.
+        or inside ``states`` (scalar, 0-d array, or 1-D array of shape
+        ``(n_elems,)``). Values found in ``states`` take precedence.
 
         Parameters
         ----------
         states : dict[str, NDArray]
             Must contain: ``positions`` (3, n_nodes), ``dilatation`` (n_elems,),
             ``r_rectangle_center`` (n_elems,), ``fin_direction`` (3, n_elems).
-            May also contain ``half_fin_span``, ``fin_thickness``,
-            ``pipe_outer_radius``, and ``inner_to_outer_radius_ratio`` as
-            per-rod scalars.
+            May also contain ``half_fin_span`` as a scalar or per-element array,
+            and ``fin_thickness``, ``pipe_outer_radius``,
+            ``inner_to_outer_radius_ratio`` as per-rod scalars.
         """
-        _half_fin_span = (
-            float(states["half_fin_span"])
-            if "half_fin_span" in states
-            else half_fin_span
-        )
+        if "half_fin_span" in states:
+            v = np.asarray(states["half_fin_span"])
+            _half_fin_span: float | NDArray = v if v.ndim > 0 else float(v)
+        else:
+            _half_fin_span = half_fin_span
         _fin_thickness = (
             float(states["fin_thickness"])
             if "fin_thickness" in states
