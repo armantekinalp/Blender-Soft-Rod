@@ -126,7 +126,7 @@ class BaseStack(Sequence, KeyFrameControlMixin):
         self = cls()
         keys = states.keys()
         lengths = [i.shape[0] for i in states.values()]
-        assert len(set(lengths)) <= 1, "All states must have the same length"
+        assert len(set(lengths)) == 1, "All states must have the same length"
         num_objects = lengths[0]
 
         for oidx in range(num_objects):
