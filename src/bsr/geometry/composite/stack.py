@@ -10,6 +10,8 @@ __all__ = [
     "create_annulus_rod_collection",
     "RectAnnulusRodStack",
     "create_rect_annulus_rod_collection",
+    "FinSegmentRodStack",
+    "create_fin_segment_rod_collection",
 ]
 
 from typing import TYPE_CHECKING, Any, Protocol, Type, overload
@@ -31,6 +33,7 @@ from numpy.typing import NDArray
 from bsr.geometry.composite.rod import (
     AnnulusRodWithSpline,
     FinnedRodWithSpline,
+    FinSegmentRodWithSpline,
     RectAnnulusRodWithSpline,
     Rod,
     RodWithSpline,
@@ -310,12 +313,54 @@ class RectAnnulusRodStack(BaseStack):
     DefaultType: Type = RectAnnulusRodWithSpline
 
 
+class FinSegmentRodStack(BaseStack):
+    """
+    Stack of FinSegmentRodWithSpline objects.
+
+    Each object is a single rectangular fin blade swept along an
+    already-resolved spine, with independently varying left/right edges
+    per element. Unlike ``SplineFinnedRodStack``, there is no offset
+    computation from a rod centerline done here -- ``positions`` is
+    whatever spine each fin has already been resolved to by the caller,
+    and ``left_span``/``right_span`` are independent (not symmetric about
+    a single offset distance).
+
+    Parameters
+    ----------
+    positions : NDArray
+        Shape: (n_fins, 3, n_nodes).
+    dilatation : NDArray
+        Shape: (n_fins, n_elems).
+    left_span : NDArray
+        Per-fin, per-element distance from the spine to the "left" edge.
+        Shape: (n_fins, n_elems). Fixed at construction; not updated per
+        frame.
+    right_span : NDArray
+        Per-fin, per-element distance from the spine to the "right" edge.
+        Shape: (n_fins, n_elems). Fixed at construction; not updated per
+        frame.
+    fin_thickness : NDArray
+        Thickness per fin. Shape: (n_fins,). Fixed at construction; not
+        updated per frame.
+    """
+
+    input_states = {
+        "positions",
+        "dilatation",
+        "left_span",
+        "right_span",
+        "fin_thickness",
+    }
+    DefaultType: Type = FinSegmentRodWithSpline
+
+
 # Alias for factory functions
 create_rod_collection = RodStack.create
 create_spline_rod_collection = SplineRodStack.create
 create_spline_finned_rod_collection = SplineFinnedRodStack.create
 create_annulus_rod_collection = AnnulusRodStack.create
 create_rect_annulus_rod_collection = RectAnnulusRodStack.create
+create_fin_segment_rod_collection = FinSegmentRodStack.create
 
 if TYPE_CHECKING:
     data: dict[str, NDArray] = {

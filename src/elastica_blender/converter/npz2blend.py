@@ -22,13 +22,31 @@ def confirm_pyelastica_npz_structure(
     finned_spline_rod: bool = False,
     annulus_rod: bool = False,
     rect_annulus_rod: bool = False,
+    fin_pipe_bundle: bool = False,
 ) -> None:
     data = np.load(path)
     keys = list(data.keys())
 
     # Check if all keys match one of the following patterns
     required_key_pattern = ["time"]
-    if tags is not None:
+    if fin_pipe_bundle:
+        prefixes: list[str | None] = (
+            list(tags) if tags is not None else [None]
+        )
+        for tag in prefixes:
+            prefix = f"{tag}_" if tag is not None else ""
+            required_key_pattern.append(prefix + "fin_position_history")
+            required_key_pattern.append(prefix + "fin_dilatation_history")
+            required_key_pattern.append(prefix + "fin_left_span")
+            required_key_pattern.append(prefix + "fin_right_span")
+            required_key_pattern.append(prefix + "fin_thickness")
+            required_key_pattern.append(prefix + "pipe_position_history")
+            required_key_pattern.append(prefix + "pipe_dilatation_history")
+            required_key_pattern.append(prefix + "pipe_outer_radius")
+            required_key_pattern.append(
+                prefix + "pipe_inner_to_outer_radius_ratio"
+            )
+    elif tags is not None:
         for tag in tags:
             required_key_pattern.append(tag + "_position_history")
             if finned_spline_rod:
@@ -92,6 +110,7 @@ def construct_blender_file(
     finned_spline_rod: bool = False,
     annulus_rod: bool = False,
     rect_annulus_rod: bool = False,
+    fin_pipe_bundle: bool = False,
 ) -> None:
     """
     Read npz file containing the position and radius data of multiple elastica rods.
@@ -116,6 +135,19 @@ def construct_blender_file(
     ``pipe_outer_radius`` are per-rod scalar arrays (shape n_rods) baked into the
     bevel profile at construction; not updated per frame.
 
+    When fin_pipe_bundle is True, create_fin_segment_rod_collection and
+    create_annulus_rod_collection are built from independent ``fin_*`` and
+    ``pipe_*`` key groups (no shared centerline position history -- each fin
+    segment and each pipe already carries its own fully-resolved spine).
+    Requires fin_position_history, fin_dilatation_history, fin_left_span,
+    fin_right_span, fin_thickness, pipe_position_history,
+    pipe_dilatation_history, pipe_outer_radius, and
+    pipe_inner_to_outer_radius_ratio (or <tag>_fin_*/<tag>_pipe_* variants).
+    ``fin_left_span``/``fin_right_span`` are per-fin, per-element arrays;
+    ``fin_thickness``, ``pipe_outer_radius``, and
+    ``pipe_inner_to_outer_radius_ratio`` are per-rod scalar arrays baked in
+    at construction; none of these are updated per frame.
+
     Parameters
     ----------
     path : str or Path
@@ -136,6 +168,9 @@ def construct_blender_file(
         on the same position history. Requires position_history, radius_history,
         dilatation_history, half_fin_span, fin_thickness, and pipe_outer_radius
         (per-rod scalars, shape n_rods). No director_history needed. Default is False.
+    fin_pipe_bundle : bool, optional
+        Build independent fin-segment and off-center pipe collections from
+        ``fin_*``/``pipe_*`` key groups. See above. Default is False.
     """
     bsr.clear_mesh_objects()
     confirm_pyelastica_npz_structure(
@@ -144,6 +179,7 @@ def construct_blender_file(
         finned_spline_rod=finned_spline_rod,
         annulus_rod=annulus_rod,
         rect_annulus_rod=rect_annulus_rod,
+        fin_pipe_bundle=fin_pipe_bundle,
     )
     data = np.load(path)
 
@@ -154,7 +190,54 @@ def construct_blender_file(
     else:  # pragma: no cover
         NotImplementedError("Not implemented yet.")
 
-    if tags is None:
+    if fin_pipe_bundle:
+        prefixes: list[str | None] = (
+            list(tags) if tags is not None else [None]
+        )
+        for tag in prefixes:
+            prefix = f"{tag}_" if tag is not None else ""
+            fin_position_history = data[prefix + "fin_position_history"]
+            fin_dilatation_history = data[prefix + "fin_dilatation_history"]
+            fin_left_span = data[prefix + "fin_left_span"]
+            fin_right_span = data[prefix + "fin_right_span"]
+            fin_thickness = data[prefix + "fin_thickness"]
+            fin_init_state = {
+                "positions": fin_position_history[:, 0, ...],
+                "dilatation": fin_dilatation_history[:, 0, ...],
+                "left_span": fin_left_span,
+                "right_span": fin_right_span,
+                "fin_thickness": fin_thickness,
+            }
+            fin_rods = bsr.create_fin_segment_rod_collection(fin_init_state)
+
+            pipe_position_history = data[prefix + "pipe_position_history"]
+            pipe_dilatation_history = data[
+                prefix + "pipe_dilatation_history"
+            ]
+            pipe_outer_radius = data[prefix + "pipe_outer_radius"]
+            pipe_inner_to_outer_radius_ratio = data[
+                prefix + "pipe_inner_to_outer_radius_ratio"
+            ]
+            pipe_init_state = {
+                "positions": pipe_position_history[:, 0, ...],
+                "dilatation": pipe_dilatation_history[:, 0, ...],
+                "pipe_outer_radius": pipe_outer_radius,
+                "inner_to_outer_radius_ratio": pipe_inner_to_outer_radius_ratio,
+            }
+            pipe_rods = bsr.create_annulus_rod_collection(pipe_init_state)
+
+            for tidx, _ in tqdm(enumerate(time), total=len(time)):
+                fin_rods.update_states(
+                    fin_position_history[:, tidx, ...],
+                    fin_dilatation_history[:, tidx, ...],
+                )
+                fin_rods.update_keyframe(tidx)
+                pipe_rods.update_states(
+                    pipe_position_history[:, tidx, ...],
+                    pipe_dilatation_history[:, tidx, ...],
+                )
+                pipe_rods.update_keyframe(tidx)
+    elif tags is None:
         position_history = data["position_history"]
         if finned_spline_rod:
             dilatation_history = data["dilatation_history"]
@@ -407,6 +490,17 @@ def construct_blender_file(
     "Requires position_history, dilatation_history, rect_width, rect_depth, and "
     "bore_radius in the NPZ file.",
 )
+@click.option(
+    "--fin-pipe-bundle",
+    is_flag=True,
+    default=False,
+    help="Build independent fin-segment (create_fin_segment_rod_collection) and "
+    "off-center pipe (create_annulus_rod_collection) collections from fin_* and "
+    "pipe_* key groups. Requires fin_position_history, fin_dilatation_history, "
+    "fin_left_span, fin_right_span, fin_thickness, pipe_position_history, "
+    "pipe_dilatation_history, pipe_outer_radius, and "
+    "pipe_inner_to_outer_radius_ratio in the NPZ file.",
+)
 def main(
     path: Path,
     output: Path,
@@ -416,6 +510,7 @@ def main(
     finned_spline_rod: bool,
     annulus_rod: bool,
     rect_annulus_rod: bool,
+    fin_pipe_bundle: bool,
 ) -> None:  # pragma: no cover
     construct_blender_file(
         path,
@@ -426,4 +521,5 @@ def main(
         finned_spline_rod,
         annulus_rod,
         rect_annulus_rod,
+        fin_pipe_bundle,
     )

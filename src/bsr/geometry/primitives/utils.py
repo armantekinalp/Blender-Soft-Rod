@@ -136,3 +136,45 @@ def _validate_rotation_matrix(director: NDArray) -> None:
 
     if np.isnan(director).any():
         raise ValueError("The director contains NaN values.")
+
+
+def compute_fin_segment_bounds(
+    pipe_offset: NDArray, pipe_radius: float, overlap_ratio: float = 0.05
+) -> NDArray:
+    """
+    Compute a fin segment boundary that extends slightly into an adjacent
+    pipe's footprint, rather than stopping exactly at its edge.
+
+    Given the signed distance from a fin segment's own spine to an adjacent
+    pipe's center (``pipe_offset``), returns the distance to the pipe's near
+    edge nudged inward by ``overlap_ratio`` of the pipe's diameter -- small
+    enough to guarantee no visible gap between the fin segment and the pipe,
+    while staying well within the pipe's footprint so it doesn't poke out
+    the other side.
+
+    Parameters
+    ----------
+    pipe_offset : NDArray
+        Signed distance from the fin segment's spine to the pipe's center,
+        at each node/element the segment shares with the pipe. Positive
+        values mean the pipe sits further from the spine in the direction
+        the segment's span extends; negative values mean the opposite
+        direction.
+    pipe_radius : float
+        Constant radius of the adjacent pipe.
+    overlap_ratio : float, optional
+        Fraction of the pipe's diameter (``2 * pipe_radius``) to extend the
+        boundary into the pipe's footprint. Default is 0.05.
+
+    Returns
+    -------
+    NDArray
+        The fin segment boundary value (e.g. ``left_span`` or
+        ``right_span``, depending on the sign convention used for
+        ``pipe_offset``) to use adjacent to this pipe.
+    """
+    pipe_offset = np.asarray(pipe_offset, dtype=float)
+    sign = np.sign(pipe_offset)
+    sign = np.where(sign == 0, 1.0, sign)
+    overlap = overlap_ratio * (2.0 * pipe_radius)
+    return cast(NDArray, pipe_offset - sign * (pipe_radius - overlap))

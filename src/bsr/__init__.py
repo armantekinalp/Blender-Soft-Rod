@@ -22,6 +22,7 @@ from .geometry.composite.pose import Pose
 from .geometry.composite.rod import (
     AnnulusRodWithSpline,
     FinnedRodWithSpline,
+    FinSegmentRodWithSpline,
     RectAnnulusRodWithSpline,
     Rod,
     RodWithBox,
@@ -30,11 +31,13 @@ from .geometry.composite.rod import (
 )
 from .geometry.composite.stack import (
     AnnulusRodStack,
+    FinSegmentRodStack,
     RectAnnulusRodStack,
     RodStack,
     SplineFinnedRodStack,
     SplineRodStack,
     create_annulus_rod_collection,
+    create_fin_segment_rod_collection,
     create_rect_annulus_rod_collection,
     create_rod_collection,
     create_spline_finned_rod_collection,
@@ -42,6 +45,7 @@ from .geometry.composite.stack import (
 )
 from .geometry.primitives.pipe import (
     BezierSplineAnnulusPipe,
+    BezierSplineFinSegmentPipe,
     BezierSplinePipe,
     BezierSplineRectAnnulusPipe,
 )

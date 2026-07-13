@@ -10,6 +10,7 @@ __all__ = [
     "FinnedRodWithSpline",
     "AnnulusRodWithSpline",
     "RectAnnulusRodWithSpline",
+    "FinSegmentRodWithSpline",
 ]
 
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ from numpy.typing import NDArray
 from bsr.geometry.primitives.pipe import (
     BezierSplineAnnulusPipe,
     BezierSplineFinnedPipe,
+    BezierSplineFinSegmentPipe,
     BezierSplinePipe,
     BezierSplineRectAnnulusPipe,
 )
@@ -1014,6 +1016,162 @@ class RectAnnulusRodWithSpline(KeyFrameControlMixin):
 
     def update_keyframe(self, keyframe: int) -> None:
         """Set keyframe for the rect-annulus pipe."""
+        self._pipe.update_keyframe(keyframe)
+
+
+class FinSegmentRodWithSpline(KeyFrameControlMixin):
+    """
+    Rod class rendering a single rectangular fin blade with independently
+    varying left/right edges, swept along an already-resolved spine.
+
+    Wraps ``BezierSplineFinSegmentPipe``. Converts element-based
+    ``dilatation`` to node-based before delegating to the pipe primitive.
+    Unlike ``FinnedRodWithSpline``, ``positions`` here is not the rod's own
+    centerline offset internally by directors -- it is whatever spine the
+    caller has already resolved (e.g. a rod centerline segment, or an
+    externally-computed offset path), and ``left_span``/``right_span`` are
+    independent per-element values rather than a single symmetric span.
+
+    The cross-section geometry (``left_span``, ``right_span``,
+    ``fin_thickness``) is fixed at construction. Per-frame updates are
+    driven by ``positions`` and ``dilatation``.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Spine node positions. Shape: (3, n_nodes).
+    dilatation : NDArray
+        Element stretch ratio. Shape: (n_elems,).
+        Interior node values are averaged from adjacent elements.
+    left_span : NDArray
+        Per-element distance from the spine to the "left" edge.
+        Shape: (n_elems,). Fixed at construction; not updated per frame.
+    right_span : NDArray
+        Per-element distance from the spine to the "right" edge.
+        Shape: (n_elems,). Fixed at construction; not updated per frame.
+    fin_thickness : float
+        Thickness of the cross-section, perpendicular to the span axis.
+        Fixed at construction; not updated per frame.
+    """
+
+    input_states = {"positions", "dilatation"}
+
+    def __init__(
+        self,
+        positions: NDArray,
+        dilatation: NDArray,
+        left_span: NDArray,
+        right_span: NDArray,
+        fin_thickness: float,
+    ) -> None:
+        node_dilatation = self._element_to_node_values(dilatation)
+        self._pipe = BezierSplineFinSegmentPipe(
+            positions,
+            node_dilatation,
+            left_span,
+            right_span,
+            fin_thickness,
+        )
+
+    @staticmethod
+    def _element_to_node_values(values: NDArray) -> NDArray:
+        """Convert element-based (n_elems,) to node-based (n_nodes,)."""
+        node_values = np.concatenate([values, [0.0]])
+        node_values[1:] += values
+        node_values[1:-1] /= 2.0
+        return node_values
+
+    @property
+    def material(self) -> dict[str, bpy.types.Material]:
+        """Return the material dict of the fin segment pipe."""
+        return self._pipe.material
+
+    @property
+    def object(self) -> dict[str, bpy.types.Object]:
+        """Return the object dict of the fin segment pipe."""
+        return self._pipe.object
+
+    @classmethod
+    def create(
+        cls,
+        states: dict[str, NDArray],
+        left_span: NDArray | None = None,
+        right_span: NDArray | None = None,
+        fin_thickness: float | None = None,
+    ) -> "FinSegmentRodWithSpline":
+        """
+        Factory method to create a new FinSegmentRodWithSpline.
+
+        ``left_span``, ``right_span``, and ``fin_thickness`` can be supplied
+        as keyword arguments or inside ``states``. Values found in
+        ``states`` take precedence.
+
+        Parameters
+        ----------
+        states : dict[str, NDArray]
+            Must contain: ``positions`` (3, n_nodes), ``dilatation`` (n_elems,).
+            May also contain ``left_span``, ``right_span`` (n_elems,) and
+            ``fin_thickness`` (scalar).
+        """
+        _left_span = (
+            np.asarray(states["left_span"])
+            if "left_span" in states
+            else left_span
+        )
+        _right_span = (
+            np.asarray(states["right_span"])
+            if "right_span" in states
+            else right_span
+        )
+        _fin_thickness = (
+            float(states["fin_thickness"])
+            if "fin_thickness" in states
+            else fin_thickness
+        )
+        assert (
+            _left_span is not None
+            and _right_span is not None
+            and _fin_thickness is not None
+        ), (
+            "left_span, right_span, and fin_thickness must be provided "
+            "either as keyword arguments or inside `states`."
+        )
+        return cls(
+            states["positions"],
+            states["dilatation"],
+            _left_span,
+            _right_span,
+            _fin_thickness,
+        )
+
+    def update_states(self, positions: NDArray, dilatation: NDArray) -> None:
+        """
+        Update positions and dilatation for the current frame.
+
+        Parameters
+        ----------
+        positions : NDArray
+            Shape: (3, n_nodes).
+        dilatation : NDArray
+            Element stretch ratio. Shape: (n_elems,).
+        """
+        assert positions.ndim == 2, "positions must be 2D array"
+        assert positions.shape[0] == 3, "positions must have 3 rows"
+        assert dilatation.ndim == 1, "dilatation must be 1D array"
+        assert (
+            positions.shape[-1] == dilatation.shape[-1] + 1
+        ), "dilatation must have n_nodes-1 elements"
+        self._pipe.update_states(
+            positions,
+            self._element_to_node_values(dilatation),
+        )
+
+    def update_material(self, **kwargs: Any) -> None:
+        """Update the material of the fin segment pipe."""
+        self._pipe.update_material(**kwargs)
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """Set keyframe for the fin segment pipe."""
         self._pipe.update_keyframe(keyframe)
 
 

@@ -10,6 +10,7 @@ __all__ = [
     "BezierSplineFinnedPipe",
     "BezierSplineAnnulusPipe",
     "BezierSplineRectAnnulusPipe",
+    "BezierSplineFinSegmentPipe",
 ]
 
 from typing import TYPE_CHECKING, Any, cast
@@ -391,6 +392,104 @@ def _create_bevel_rect_annulus(
     obj.hide_viewport = True
     obj.hide_render = True
     return obj
+
+
+def _create_bevel_rectangle_asymmetric(
+    left_span: float, right_span: float, fin_thickness: float
+) -> bpy.types.Object:
+    """
+    Create a closed rectangular 2D bevel profile curve whose two edges along
+    the span axis are independently sized relative to the local origin
+    (the spine), instead of being symmetric about it.
+
+    The rectangle spans from ``-left_span`` to ``right_span`` along local Y
+    (the span axis) and ``±fin_thickness / 2`` along local X (the thickness
+    axis) — the same axis convention as
+    ``BezierSplineFinnedPipe._create_bevel_rectangle``, generalized to
+    independent edges so the spine can sit anywhere within (or at the edge
+    of) the rectangle rather than always at its center.
+    """
+    curve_data = bpy.data.curves.new(
+        name="bevel_rect_asymmetric", type="CURVE"
+    )
+    curve_data.dimensions = "2D"
+
+    rect_spline = curve_data.splines.new(type="BEZIER")
+    rect_spline.bezier_points.add(3)  # 4 points total
+    rect_spline.use_cyclic_u = True
+
+    hw = fin_thickness / 2.0
+    corners = [
+        (-hw, -left_span, 0),
+        (hw, -left_span, 0),
+        (hw, right_span, 0),
+        (-hw, right_span, 0),
+    ]
+    for i, (x, y, z) in enumerate(corners):
+        pt = rect_spline.bezier_points[i]
+        pt.co = (x, y, z)
+        pt.handle_left_type = pt.handle_right_type = "VECTOR"
+
+    obj = bpy.data.objects.new("bevel_rect_asymmetric", curve_data)
+    bpy.context.collection.objects.link(obj)
+    obj.hide_viewport = True
+    obj.hide_render = True
+    return obj
+
+
+def _create_per_element_asymmetric_rect_spine(
+    left_span: NDArray,
+    right_span: NDArray,
+    fin_thickness: float,
+) -> tuple[list, list]:
+    """
+    Create one 2-point Bezier curve per element, each with its own
+    asymmetric rectangular bevel (``_create_bevel_rectangle_asymmetric``).
+
+    Parameters
+    ----------
+    left_span : NDArray
+        Per-element distance from the spine to the "left" edge. Shape: (n_elems,).
+    right_span : NDArray
+        Per-element distance from the spine to the "right" edge. Shape: (n_elems,).
+    fin_thickness : float
+        Thickness shared across all elements.
+
+    Returns
+    -------
+    tuple of (list of Objects, list of Materials)
+    """
+    objects = []
+    materials = []
+    for l_span, r_span in zip(left_span, right_span):
+        curve_data = bpy.data.curves.new(
+            name="fin_segment_spline_curve", type="CURVE"
+        )
+        curve_data.dimensions = "3D"
+        spline = curve_data.splines.new(type="BEZIER")
+        spline.bezier_points.add(1)  # 2 points total
+        for point in spline.bezier_points:
+            point.handle_left_type = point.handle_right_type = "FREE"
+
+        curve_obj = bpy.data.objects.new(
+            "fin_segment_spline_curve_object", curve_data
+        )
+        curve_obj.data.resolution_u = 1
+        bpy.context.collection.objects.link(curve_obj)
+
+        bevel_rect = _create_bevel_rectangle_asymmetric(
+            float(l_span), float(r_span), fin_thickness
+        )
+        curve_data.bevel_mode = "OBJECT"
+        curve_data.bevel_object = bevel_rect
+        curve_data.use_fill_caps = True
+
+        mat = bpy.data.materials.new(name=f"{curve_obj.name}_material")
+        curve_obj.data.materials.append(mat)
+
+        objects.append(curve_obj)
+        materials.append(mat)
+    return objects, materials
 
 
 def _create_rect_annulus_spline(
@@ -1410,6 +1509,218 @@ class BezierSplineRectAnnulusPipe(KeyFrameControlMixin):
         self._material.keyframe_insert(
             data_path="diffuse_color", frame=keyframe
         )
+
+
+class BezierSplineFinSegmentPipe(KeyFrameControlMixin):
+    """
+    A single rectangular-cross-section fin blade swept along an arbitrary,
+    already-resolved spine, with independently varying left/right edges.
+
+    Unlike ``BezierSplineFinnedPipe`` (two fixed, symmetric fins offset from
+    a rod centerline by a single distance), this primitive renders exactly
+    one blade along a spine that the caller has already fully resolved
+    (e.g. a rod's own centerline, or an externally-computed offset path
+    derived from the rod's directors). The cross-section is a rectangle
+    whose two edges relative to the spine -- ``left_span`` and
+    ``right_span`` -- vary independently per element, which lets a blade
+    taper to a point at one edge (e.g. flush against a rod's centerline)
+    while the other edge tracks an adjacent pipe boundary, without any
+    boolean/CSG cross-section work.
+
+    All inputs are node-based (shape (..., n_nodes)) except ``left_span``
+    and ``right_span``, which are per-element (shape (n_elems,)) since the
+    cross-section is fixed within each element.
+
+    Parameters
+    ----------
+    positions : NDArray
+        Spine control-point positions, already resolved by the caller.
+        Shape: (3, n_nodes).
+    dilatation : NDArray
+        Stretch ratio at each node. Shape: (n_nodes,).
+        ``point.radius`` is set to ``1 / sqrt(dilatation)`` at every node.
+    left_span : NDArray
+        Per-element distance from the spine to the "left" edge of the
+        rectangle. Shape: (n_elems,). Fixed at construction; not updated
+        per frame.
+    right_span : NDArray
+        Per-element distance from the spine to the "right" edge of the
+        rectangle. Shape: (n_elems,). Fixed at construction; not updated
+        per frame.
+    fin_thickness : float
+        Thickness of the cross-section, perpendicular to the span axis.
+        Fixed at construction; not updated per frame.
+    """
+
+    input_states = {"positions", "dilatation"}
+    name = "bspline_fin_segment"
+
+    def __init__(
+        self,
+        positions: NDArray,
+        dilatation: NDArray,
+        left_span: NDArray,
+        right_span: NDArray,
+        fin_thickness: float,
+        **kwargs: Any,
+    ) -> None:
+        left_span_arr = np.asarray(left_span, dtype=float)
+        right_span_arr = np.asarray(right_span, dtype=float)
+        assert (
+            left_span_arr.ndim == 1 and right_span_arr.ndim == 1
+        ), "left_span and right_span must be 1-D arrays with shape (n_elems,)"
+        n_elems = positions.shape[1] - 1
+        assert len(left_span_arr) == n_elems and len(right_span_arr) == n_elems, (
+            f"left_span/right_span length ({len(left_span_arr)}, "
+            f"{len(right_span_arr)}) must equal n_elems ({n_elems})"
+        )
+
+        self._segment_objs, self._segment_materials = (
+            _create_per_element_asymmetric_rect_spine(
+                left_span_arr, right_span_arr, fin_thickness
+            )
+        )
+
+        self.update_states(positions, dilatation)
+
+    @classmethod
+    def create(
+        cls,
+        states: SplineDataType,
+        left_span: NDArray | None = None,
+        right_span: NDArray | None = None,
+        fin_thickness: float | None = None,
+    ) -> "BezierSplineFinSegmentPipe":
+        """
+        Factory method. Expects node-based ``positions``/``dilatation`` and
+        per-element ``left_span``/``right_span`` in ``states``.
+
+        Required keys: ``positions`` (3, n_nodes), ``dilatation`` (n_nodes,).
+        ``left_span``, ``right_span``, and ``fin_thickness`` may be supplied
+        either as keyword arguments or inside ``states``; values found in
+        ``states`` take precedence.
+        """
+        remaining_keys = set(states.keys()) - {
+            "positions",
+            "dilatation",
+            "left_span",
+            "right_span",
+            "fin_thickness",
+        }
+        if remaining_keys:
+            warnings.warn(
+                f"{list(remaining_keys)} are not used as a part of the state definition."
+            )
+        _left_span = (
+            np.asarray(states["left_span"])
+            if "left_span" in states
+            else left_span
+        )
+        _right_span = (
+            np.asarray(states["right_span"])
+            if "right_span" in states
+            else right_span
+        )
+        _fin_thickness = (
+            float(states["fin_thickness"])
+            if "fin_thickness" in states
+            else fin_thickness
+        )
+        assert (
+            _left_span is not None
+            and _right_span is not None
+            and _fin_thickness is not None
+        ), (
+            "left_span, right_span, and fin_thickness must be provided "
+            "either as keyword arguments or inside `states`."
+        )
+        return cls(
+            states["positions"],
+            states["dilatation"],
+            _left_span,
+            _right_span,
+            _fin_thickness,
+        )
+
+    @property
+    def material(self) -> dict[str, bpy.types.Material]:
+        """Return a dict of all materials keyed by element index."""
+        return {
+            f"segment_{i}": m for i, m in enumerate(self._segment_materials)
+        }
+
+    @property
+    def object(self) -> dict[str, bpy.types.Object]:
+        """Return a dict of all Blender objects keyed by element index."""
+        return {f"segment_{i}": o for i, o in enumerate(self._segment_objs)}
+
+    def update_material(self, **kwargs: Any) -> None:
+        """
+        Update the diffuse color of all segment materials.
+
+        Parameters
+        ----------
+        color : NDArray
+            RGBA color array of shape (4,), values in [0, 1].
+        """
+        if "color" in kwargs:
+            color = kwargs["color"]
+            if isinstance(color, (tuple, list)):
+                color = np.array(color)
+            assert isinstance(
+                color, np.ndarray
+            ), "Keyword argument `color` should be a numpy array."
+            assert color.shape == (
+                4,
+            ), "Keyword argument color should be a 1D array with 4 elements: RGBA."
+            assert np.all(color >= 0) and np.all(
+                color <= 1
+            ), "Keyword argument color should be in the range of [0, 1]."
+            color_tuple = tuple(color)
+            for m in self._segment_materials:
+                m.diffuse_color = color_tuple
+
+    def update_states(
+        self,
+        positions: NDArray,
+        dilatation: NDArray,
+    ) -> None:
+        """
+        Update segment spine positions and cross-section scale.
+
+        Parameters
+        ----------
+        positions : NDArray
+            Spine node positions. Shape: (3, n_nodes).
+        dilatation : NDArray
+            Stretch ratio at each node. Shape: (n_nodes,).
+        """
+        _validate_position(positions)
+        _validate_radii(dilatation)
+        for elem_idx, obj in enumerate(self._segment_objs):
+            spline = obj.data.splines[0]
+            for local_pt_idx, node_idx in enumerate([elem_idx, elem_idx + 1]):
+                pt = spline.bezier_points[local_pt_idx]
+                x, y, z = positions[:, node_idx]
+                pt.co = (x, y, z)
+                pt.radius = 1.0 / np.sqrt(float(dilatation[node_idx]))
+
+    def update_keyframe(self, keyframe: int) -> None:
+        """Set keyframes for all segment spines and materials."""
+        for obj, mat in zip(self._segment_objs, self._segment_materials):
+            self._keyframe_spine(obj, keyframe)
+            mat.keyframe_insert(data_path="diffuse_color", frame=keyframe)
+
+    @staticmethod
+    def _keyframe_spine(spine_obj: bpy.types.Object, keyframe: int) -> None:
+        spline = spine_obj.data.splines[0]
+        for point in spline.bezier_points:
+            point.handle_left_type = "AUTO"
+            point.handle_right_type = "AUTO"
+            point.keyframe_insert(data_path="handle_left", frame=keyframe)
+            point.keyframe_insert(data_path="handle_right", frame=keyframe)
+            point.keyframe_insert(data_path="co", frame=keyframe)
+            point.keyframe_insert(data_path="radius", frame=keyframe)
 
 
 if TYPE_CHECKING:
